@@ -2,6 +2,8 @@
 
 from __future__ import unicode_literals
 
+import collections
+import functools
 import logging
 from contextlib import contextmanager
 
@@ -161,6 +163,49 @@ class MagicMailBuilder(object):
             return email_instance
 
         return _dynamic_email_generator
+
+
+class MagicMailBuilderV2(object):
+
+    def __init__(self, email_attr='email', lang_attr='lang', name_prototype='{name}',
+                 template_mail_cls=InlineCSSTemplateMail):
+        self._email_attr = email_attr
+        self._lang_attr = lang_attr
+        self._name_prototype = name_prototype
+        self._template_mail_cls = template_mail_cls
+
+    def _get_infos(self, recipient):
+        if isinstance(recipient, utils.string_types):
+            return recipient, None
+        return getattr(recipient, self._email_attr, None), getattr(recipient, self._lang_attr, None)
+
+    def _email_generator(self, to, context, lang=None, name=None, priority=models.PRIORITY_STANDARD):
+        if not isinstance(to, (list, tuple)):
+            to = [to]
+        lang = context.get('lang', lang)
+
+        # regroup recipients by language
+        to_by_lang = collections.defaultdict(list)
+        for counter, recipient in enumerate(to):
+            address, lang_ = self._get_infos(recipient)
+            if not address:
+                raise AttributeError("Unable to retrieve e-mail address from 'to[{0}]={1}'".format(counter, recipient))
+            to_by_lang[lang_ or lang].append(address)
+
+        # create an email instance by language
+        email_by_lang = {}
+        for lang, to in to_by_lang.items():
+            context.pop('lang', None)
+            if lang is not None:
+                context['lang'] = lang
+            template_email = self._template_mail_cls(name=name)
+            email = template_email.make_email_object(to, context)
+            email.priority = priority
+            email_by_lang[lang] = email
+        return email_by_lang
+
+    def __getattr__(self, name):
+        return functools.partial(self._email_generator, name=self._name_prototype.format(name=name))
 
 
 def make_email(name, to, context=None, template_mail_cls=TemplateMail, **kwargs):
